@@ -7,8 +7,8 @@ import type {
   TreeEdge,
   TreeNode,
 } from "../types/family";
+import { getSiblingPersonIds, isParentRelationship } from "./treeEdits";
 
-const CARD_WIDTH = 176;
 const GENERATION_GAP = 220;
 const BRANCH_GAP = 320;
 const SIBLING_GAP = 190;
@@ -22,7 +22,8 @@ export function getPersonName(person: Person) {
 export function getInitials(person: Person) {
   const first = (person.preferredName || person.givenName).at(0) ?? "";
   const last = person.familyName?.at(0) ?? "";
-  return `${first}${last}`.toUpperCase();
+  const initials = `${first}${last}`.toUpperCase();
+  return initials || "?";
 }
 
 export function getLifeSpan(person: Person) {
@@ -43,7 +44,7 @@ export function getBranchLabel(branch: FamilyBranch) {
     case "root":
       return "Root profile";
     case "shared":
-      return "Shared";
+      return "Both sides / extended";
     case "unknown":
       return "Unknown branch";
   }
@@ -97,6 +98,12 @@ export function buildTreeLayout(data: FamilyTreeData) {
     }
   }
 
+  const maxAncestorGen = Math.max(0, ...[...metadata.values()].map((meta) => meta.generation));
+  const minGen = -2;
+  const maxGen = Math.max(maxAncestorGen + 1, 4);
+
+  expandCollaterals(metadata, data, peopleById, parentRelationships, minGen, maxGen);
+
   const nodes = Array.from(metadata.entries())
     .map(([personId, meta]) => {
       const person = peopleById.get(personId);
@@ -114,19 +121,64 @@ export function buildTreeLayout(data: FamilyTreeData) {
   positionNodes(nodes);
 
   const nodeIds = new Set(nodes.map((node) => node.person.id));
+  const nodeById = new Map(nodes.map((node) => [node.person.id, node]));
+
   const edges: TreeEdge[] = parentRelationships
     .filter((relationship) => nodeIds.has(relationship.from) && nodeIds.has(relationship.to))
     .map((relationship) => {
-      const parent = nodes.find((node) => node.person.id === relationship.from);
-      const child = nodes.find((node) => node.person.id === relationship.to);
+      const parent = nodeById.get(relationship.from);
+      const child = nodeById.get(relationship.to);
       return {
         id: relationship.id,
         from: relationship.from,
         to: relationship.to,
         branch: parent?.branch === "root" ? child?.branch ?? "unknown" : parent?.branch ?? "unknown",
         label: relationship.role,
+        edgeKind: "parent" as const,
       };
     });
+
+  const siblingPairKeys = new Set(
+    data.relationships
+      .filter((relationship) => relationship.kind === "sibling")
+      .map((relationship) => siblingPairKey(relationship.from, relationship.to))
+  );
+
+  for (const relationship of data.relationships) {
+    if (relationship.kind !== "sibling") continue;
+    if (!nodeIds.has(relationship.from) || !nodeIds.has(relationship.to)) continue;
+    const a = nodeById.get(relationship.from);
+    const b = nodeById.get(relationship.to);
+    const branch = siblingEdgeBranch(a?.branch, b?.branch);
+    edges.push({
+      id: relationship.id,
+      from: relationship.from,
+      to: relationship.to,
+      branch,
+      edgeKind: "sibling",
+    });
+  }
+
+  for (const node of nodes) {
+    const personId = node.person.id;
+    for (const sibId of getSiblingPersonIds(data, personId)) {
+      if (personId >= sibId) continue;
+      if (!nodeIds.has(sibId)) continue;
+      const key = siblingPairKey(personId, sibId);
+      if (siblingPairKeys.has(key)) continue;
+      siblingPairKeys.add(key);
+      const a = nodeById.get(personId);
+      const b = nodeById.get(sibId);
+      edges.push({
+        id: `inferred-sibling-${key}`,
+        from: personId,
+        to: sibId,
+        branch: siblingEdgeBranch(a?.branch, b?.branch),
+        edgeKind: "sibling",
+        inferredSibling: true,
+      });
+    }
+  }
 
   return { nodes, edges, peopleById };
 }
@@ -140,12 +192,77 @@ export function createEmptyPerson(id: string): Person {
   };
 }
 
-function isParentRelationship(relationship: Relationship) {
-  return (
-    relationship.kind === "biological-parent" ||
-    relationship.kind === "adoptive-parent" ||
-    relationship.kind === "step-parent"
-  );
+/** Single root person, no relationships — for rebuilding the tree from the UI. */
+export function createBlankFamilyTree(): FamilyTreeData {
+  const id = `person-${Date.now()}`;
+  return {
+    rootPersonId: id,
+    people: [
+      {
+        id,
+        givenName: "",
+        summary: "Type a name on this tile or in the side panel, then add relatives.",
+        tags: ["root", "draft"],
+      },
+    ],
+    relationships: [],
+    sources: [],
+  };
+}
+
+function expandCollaterals(
+  metadata: Map<PersonId, { branch: FamilyBranch; generation: number }>,
+  data: FamilyTreeData,
+  peopleById: Map<PersonId, Person>,
+  parentRelationships: Relationship[],
+  minGen: number,
+  maxGen: number
+) {
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const [personId, meta] of [...metadata.entries()]) {
+      for (const siblingId of getSiblingPersonIds(data, personId)) {
+        if (!peopleById.has(siblingId) || metadata.has(siblingId)) continue;
+        const nextGen = meta.generation;
+        if (nextGen < minGen || nextGen > maxGen) continue;
+        metadata.set(siblingId, {
+          generation: nextGen,
+          branch: collateralBranch(meta.branch),
+        });
+        changed = true;
+      }
+
+      for (const relationship of parentRelationships) {
+        if (relationship.from !== personId) continue;
+        const childId = relationship.to;
+        if (!peopleById.has(childId) || metadata.has(childId)) continue;
+        const nextGen = meta.generation - 1;
+        if (nextGen < minGen || nextGen > maxGen) continue;
+        metadata.set(childId, {
+          generation: nextGen,
+          branch: meta.branch === "root" ? "shared" : meta.branch,
+        });
+        changed = true;
+      }
+    }
+  }
+}
+
+function collateralBranch(branch: FamilyBranch): FamilyBranch {
+  if (branch === "root") return "shared";
+  return branch;
+}
+
+function siblingPairKey(a: PersonId, b: PersonId) {
+  return a < b ? `${a}|${b}` : `${b}|${a}`;
+}
+
+function siblingEdgeBranch(a?: FamilyBranch, b?: FamilyBranch): FamilyBranch {
+  if (a === "maternal" || b === "maternal") return "maternal";
+  if (a === "paternal" || b === "paternal") return "paternal";
+  if (a === "root" || b === "root") return "shared";
+  return a ?? b ?? "shared";
 }
 
 function getParentBranch(
@@ -161,27 +278,21 @@ function getParentBranch(
 }
 
 function positionNodes(nodes: TreeNode[]) {
-  const byGeneration = new Map<number, TreeNode[]>();
-  for (const node of nodes) {
-    const group = byGeneration.get(node.generation) ?? [];
-    group.push(node);
-    byGeneration.set(node.generation, group);
-  }
+  const generations = [...new Set(nodes.map((node) => node.generation))].sort((a, b) => a - b);
 
-  for (const [generation, generationNodes] of byGeneration) {
-    if (generation === 0) {
-      generationNodes[0].x = 0;
-      generationNodes[0].y = 0;
-      continue;
-    }
+  for (const generation of generations) {
+    const generationNodes = nodes.filter((node) => node.generation === generation);
+    const branchOrder: FamilyBranch[] = ["maternal", "root", "shared", "paternal", "unknown"];
 
-    for (const branch of ["maternal", "paternal", "unknown", "shared"] as FamilyBranch[]) {
-      const branchNodes = generationNodes
+    for (const branch of branchOrder) {
+      const bucket = generationNodes
         .filter((node) => node.branch === branch)
-        .sort(sortAncestors);
+        .sort((a, b) => getPersonName(a.person).localeCompare(getPersonName(b.person)));
+      if (bucket.length === 0) continue;
+
       const baseX = getBranchBaseX(branch, generation);
-      const start = -((branchNodes.length - 1) * SIBLING_GAP) / 2;
-      branchNodes.forEach((node, index) => {
+      const start = -((bucket.length - 1) * SIBLING_GAP) / 2;
+      bucket.forEach((node, index) => {
         node.x = baseX + start + index * SIBLING_GAP;
         node.y = -generation * GENERATION_GAP;
       });
@@ -190,12 +301,10 @@ function positionNodes(nodes: TreeNode[]) {
 }
 
 function getBranchBaseX(branch: FamilyBranch, generation: number) {
-  if (branch === "maternal") return -Math.max(1, generation) * BRANCH_GAP;
-  if (branch === "paternal") return Math.max(1, generation) * BRANCH_GAP;
+  const depth = Math.max(1, Math.abs(generation));
+  if (branch === "maternal") return -depth * BRANCH_GAP;
+  if (branch === "paternal") return depth * BRANCH_GAP;
   if (branch === "shared") return 0;
-  return generation % 2 === 0 ? 0 : CARD_WIDTH;
-}
-
-function sortAncestors(a: TreeNode, b: TreeNode) {
-  return getPersonName(a.person).localeCompare(getPersonName(b.person));
+  if (branch === "root") return 0;
+  return generation % 2 === 0 ? 0 : 120;
 }

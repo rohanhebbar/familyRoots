@@ -1,5 +1,3 @@
-import { visualLibraryOptions } from "../../data/visualLibraryOptions";
-
 interface FamilyToolbarProps {
   search: string;
   zoom: number;
@@ -11,10 +9,10 @@ interface FamilyToolbarProps {
   onZoomOut: () => void;
   onResetView: () => void;
   onBranchFilterChange: (value: "all" | "maternal" | "paternal") => void;
+  onNewBlankTree: () => void;
   onCsvTextChange: (value: string) => void;
   onImportCsv: () => void;
   onExportCsv: () => void;
-  onAddParent: (role: "mother" | "father") => void;
 }
 
 export default function FamilyToolbar({
@@ -28,21 +26,23 @@ export default function FamilyToolbar({
   onZoomOut,
   onResetView,
   onBranchFilterChange,
+  onNewBlankTree,
   onCsvTextChange,
   onImportCsv,
   onExportCsv,
-  onAddParent,
 }: FamilyToolbarProps) {
-  const prototypeChoice = visualLibraryOptions.find((option) => option.fit === "prototype");
-
   return (
     <div className="toolbar">
       <div>
         <p className="eyebrow">Prototype</p>
         <h1>FamilyRoots</h1>
         <p className="toolbar__intro">
-          Zoom out for the ancestry map, then zoom in for photo-forward person tiles.
+          Pan and zoom the tree, click someone to edit connections, and use the right panel to add or remove people.
+          Select a tile to type names on the canvas, or start over with a blank tree.
         </p>
+        <button type="button" className="toolbar-button toolbar-button--wide" onClick={onNewBlankTree}>
+          New blank tree
+        </button>
       </div>
 
       <label className="stacked-field">
@@ -63,11 +63,6 @@ export default function FamilyToolbar({
         <ToolbarButton label="Reset" active={false} onClick={onResetView} />
       </div>
 
-      <div className="segmented">
-        <ToolbarButton label="Add mother" active={false} onClick={() => onAddParent("mother")} />
-        <ToolbarButton label="Add father" active={false} onClick={() => onAddParent("father")} />
-      </div>
-
       <details className="csv-panel">
         <summary>CSV import and export</summary>
         <p>Columns: id, name, birthDate, deathDate, photoUrl, motherId, fatherId, notes.</p>
@@ -78,11 +73,6 @@ export default function FamilyToolbar({
           <ToolbarButton label="Export" active={false} onClick={onExportCsv} />
         </div>
       </details>
-
-      <div className="decision-card">
-        <span>Visual choice:</span> {prototypeChoice?.name}. {prototypeChoice?.strengths[0]} and keeps
-        the first pass easy to reshape.
-      </div>
     </div>
   );
 }

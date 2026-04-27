@@ -4,7 +4,9 @@ export type RelationshipKind =
   | "biological-parent"
   | "adoptive-parent"
   | "step-parent"
-  | "partner";
+  | "partner"
+  /** Undirected: store once with `from` & `to` in any order; readers treat as unordered. */
+  | "sibling";
 export type ParentRole = "mother" | "father" | "parent";
 export type FamilyBranch = "root" | "maternal" | "paternal" | "shared" | "unknown";
 
@@ -67,4 +69,7 @@ export interface TreeEdge {
   to: PersonId;
   branch: FamilyBranch;
   label?: string;
+  edgeKind: "parent" | "sibling";
+  /** Present when the line is synthesized from shared parents (not a stored `sibling` relationship). */
+  inferredSibling?: boolean;
 }
